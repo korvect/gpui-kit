@@ -43,6 +43,8 @@ pub use token_presentation::{
     InlineTokenClickEvent, InlineTokenClickListener, InlineTokenContext, InlineTokenHoverEvent,
     InlineTokenHoverListener, InlineTokenRenderer,
 };
+#[path = "base/edit_filter.rs"]
+mod edit_filter;
 #[path = "base/kind.rs"]
 mod kind;
 #[path = "editor/language.rs"]
@@ -55,6 +57,7 @@ mod layout;
 mod lsp;
 #[path = "base/mask_pattern.rs"]
 mod mask_pattern;
+pub use edit_filter::InputFilter;
 #[path = "base/mode.rs"]
 mod mode;
 #[path = "base/movement.rs"]

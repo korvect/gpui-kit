@@ -22,6 +22,7 @@ pub struct SelectableText {
     text: SharedString,
     styled_text: StyledText,
     document_order: u64,
+    paint_order: bool,
     text_style: Option<TextStyleRefinement>,
     selection_color: Option<Hsla>,
 }
@@ -48,6 +49,7 @@ impl SelectableText {
             styled_text: StyledText::new(text.clone()),
             text,
             document_order: 0,
+            paint_order: false,
             text_style: None,
             selection_color: None,
         }
@@ -56,6 +58,14 @@ impl SelectableText {
     /// Places this run in reading order among the others sharing its handle.
     pub fn document_order(mut self, order: u64) -> Self {
         self.document_order = order;
+        self.paint_order = false;
+        self
+    }
+
+    /// Orders this run alongside TextViews in their retained painted order.
+    /// Use when plain and rich text share one selectable document.
+    pub fn in_paint_order(mut self) -> Self {
+        self.paint_order = true;
         self
     }
 
@@ -188,11 +198,13 @@ impl Element for SelectableText {
         self.styled_text
             .prepaint(global_id, inspector_id, bounds, &mut (), window, cx);
         let hitbox = window.insert_hitbox(bounds, HitboxBehavior::Normal);
-        let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
-            .with_document_order(self.document_order)
-            .with_text_bounds(vec![bounds])
-            .with_rendered_element(handle, window, cx);
-        handle.register(registration, window, cx);
+        if !self.paint_order {
+            let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+                .with_document_order(self.document_order)
+                .with_text_bounds(vec![bounds])
+                .with_rendered_element(handle, window, cx);
+            handle.register(registration, window, cx);
+        }
         hitbox
     }
 
@@ -202,10 +214,20 @@ impl Element for SelectableText {
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
         handle: &mut Self::RequestLayoutState,
-        _: &mut Self::PrepaintState,
+        hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        if self.paint_order {
+            // TextView registers after painting its content. Join that same
+            // traversal; registering here in prepaint would place all plain
+            // runs ahead of every rich-text participant in the window.
+            let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+                .in_paint_order()
+                .with_text_bounds(vec![bounds])
+                .with_rendered_element(handle, window, cx);
+            handle.register(registration, window, cx);
+        }
         let layout = self.styled_text.layout().clone();
         let selected_text_before = TextSelection::selected_text(window, cx);
         let projection = handle.update_runs(

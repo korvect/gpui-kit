@@ -495,6 +495,7 @@ pub struct InputBaseState<M: InputModeKind> {
     /// This flag tells the renderer to prefer the end of the current visual line.
     pub(crate) cursor_line_end_affinity: bool,
     pub(super) pattern: Option<regex::Regex>,
+    input_filter: super::InputFilter,
     pub(super) validate: Option<Box<dyn Fn(&str, &mut App) -> bool + 'static>>,
     /// The step strategy for [`super::NumberInput`] to increment/decrement.
     /// See [`Self::step`] and [`Self::step_by`].
@@ -984,6 +985,7 @@ impl<M: InputModeKind> InputBaseState<M> {
             show_whitespaces: false,
             loading: false,
             pattern: None,
+            input_filter: Default::default(),
             validate: None,
             number_step: Some(NumberStep::Fixed(1.)),
             number_min: None,
@@ -1255,12 +1257,19 @@ impl<M: InputModeKind> InputBaseState<M> {
     ///
     /// Use this when programmatically replacing the full text but the
     /// user should still be able to undo the operation — e.g. formatting.
+    /// Committed-edit filters apply here (including accessibility replacement).
+    /// Use `set_value` to load an exact value without interactive filtering.
     pub fn replace_all(
         &mut self,
         text: impl Into<SharedString>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let text: SharedString = text.into();
+        let text = match self.filter_user_input(&text) {
+            Cow::Borrowed(_) => text,
+            Cow::Owned(filtered) => filtered.into(),
+        };
         self.replace_text(text, window, cx);
         self.reset_selection();
         self.reset_lsp_state();
@@ -3202,6 +3211,17 @@ impl<M: InputModeKind> InputBaseState<M> {
 
         if !self.is_multi_line() {
             new_text = new_text.replace('\n', "");
+            if let Cow::Owned(filtered) = self.filter_user_input(&new_text) {
+                new_text = filtered;
+            }
+            if self.input_filter != super::InputFilter::None
+                && new_text.is_empty()
+                && self.selected_range().is_empty()
+                && self.ime_marked_range.is_none()
+            {
+                let _ = self.undo_manager.take_pending_intent();
+                return;
+            }
             self.replace_text_in_range_silent(None, &new_text, window, cx);
             self.scroll_to(self.cursor(), None, cx);
             return;
@@ -4019,6 +4039,20 @@ impl<M: InputModeKind> InputBaseState<M> {
         }
     }
 
+    /// Set a committed-edit filter without rewriting the current value/history.
+    /// Programmatic set_value/insert/replace and history replay retain their exact
+    /// contents. Multiline editors ignore this single-line policy.
+    pub fn set_input_filter(&mut self, filter: super::InputFilter) {
+        self.input_filter = filter;
+    }
+    fn filter_user_input<'a>(&self, text: &'a str) -> Cow<'a, str> {
+        if self.is_single_line() {
+            self.input_filter.apply(text)
+        } else {
+            Cow::Borrowed(text)
+        }
+    }
+
     /// Normalize the inserted text before applying it to the input.
     ///
     /// For number inputs (with [`MaskPattern::Number`]), this converts
@@ -4471,7 +4505,21 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             .map(|range| self.range_to_utf16(&range.into()))
     }
 
-    fn unmark_text(&mut self, _window: &mut Window, _cx: &mut Context<Self>) {
+    fn unmark_text(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // Some IMEs commit by unmarking without insertText. Filter only the
+        // committed marked region, leaving the candidate/preedit text intact.
+        if self.is_editable()
+            && self.is_single_line()
+            && self.input_filter != super::InputFilter::None
+            && let Some(marked) = self.ime_marked_range
+        {
+            let range = marked.start..marked.end;
+            let text = self.text.slice(range.clone()).to_string();
+            if let Cow::Owned(filtered) = self.filter_user_input(&text) {
+                let range = self.range_to_utf16(&range);
+                self.replace_text_in_range(Some(range), &filtered, window, cx);
+            }
+        }
         self.ime_marked_range = None;
         self.undo_manager.commit_transaction();
     }
@@ -4506,7 +4554,12 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
         } else {
             self.normalize_input(new_text)
         };
-        let new_text: &str = &new_text;
+        let filtered = if self.replaying_history || self.silent_replace_text {
+            Cow::Borrowed(new_text.as_ref())
+        } else {
+            self.filter_user_input(&new_text)
+        };
+        let new_text: &str = &filtered;
 
         let range = range_utf16
             .as_ref()
@@ -4517,6 +4570,16 @@ impl<M: InputModeKind> EntityInputHandler for InputBaseState<M> {
             }))
             .unwrap_or(self.selected_range());
         let range = self.normalize_token_range(range);
+
+        // A wholly filtered insertion with no selection is not an edit. In
+        // particular, undo history and Change subscribers must stay untouched.
+        if matches!(&filtered, Cow::Owned(_))
+            && new_text.is_empty()
+            && range.is_empty()
+            && !ends_composition
+        {
+            return;
+        }
 
         // Skip-over as a pure cursor move: a typed closer that already follows
         // the cursor moves past it without touching text or history, so Undo
@@ -5127,6 +5190,13 @@ impl<M: InputModeKind> Render for InputBaseState<M> {
             .map(|this| {
                 if self.is_multi_line() {
                     this.h_full()
+                        // A block with percentage height and overflow can have
+                        // zero intrinsic height even when its text child has
+                        // a minimum. Propagate auto-grow rows to the viewport
+                        // itself so an unconstrained form can measure it.
+                        .when(self.mode.is_auto_grow(), |this| {
+                            this.min_h(self.mode.rows() * window.line_height())
+                        })
                 } else {
                     this.min_h_full().flex().items_center()
                 }

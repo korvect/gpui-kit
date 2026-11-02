@@ -4,7 +4,7 @@ use instant::Duration;
 static INTERVAL: Duration = Duration::from_millis(500);
 static PAUSE_DELAY: Duration = Duration::from_millis(300);
 
-pub(super) const CURSOR_WIDTH: Pixels = px(1.);
+pub(super) const CURSOR_WIDTH: Pixels = px(2.);
 
 /// To manage the Input cursor blinking.
 ///

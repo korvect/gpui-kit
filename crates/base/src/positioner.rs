@@ -63,6 +63,8 @@ pub struct ResolvedPosition {
 pub struct Positioner {
     strategy: Strategy,
     corner_position: Option<Rc<Cell<Point<Pixels>>>>,
+    trigger_bounds: Option<Rc<Cell<Bounds<Pixels>>>>,
+    fixed_placement: bool,
     on_position: Option<Box<dyn Fn(ResolvedPosition)>>,
     margin: Pixels,
     occlude: bool,
@@ -85,6 +87,8 @@ impl Positioner {
                 offset: px(0.),
             },
             corner_position: None,
+            trigger_bounds: None,
+            fixed_placement: false,
             on_position: None,
             margin: px(4.),
             occlude: false,
@@ -101,6 +105,8 @@ impl Positioner {
         Self {
             strategy: Strategy::Corner { anchor, position },
             corner_position: None,
+            trigger_bounds: None,
+            fixed_placement: false,
             on_position: None,
             margin: px(4.),
             occlude: false,
@@ -154,6 +160,28 @@ impl Positioner {
     // Read after trigger prepaint so an open popup follows a moving trigger.
     pub(crate) fn tracked_corner_position(mut self, position: Rc<Cell<Point<Pixels>>>) -> Self {
         self.corner_position = Some(position);
+        self
+    }
+
+    /// Reads the trigger bounds at prepaint instead of construction.
+    ///
+    /// A popup composed during render otherwise sees the trigger's previous
+    /// frame. Pass a cell the trigger writes during its own prepaint, ahead of
+    /// this element, so an open popup follows a scrolling trigger without a
+    /// frame of lag. Only meaningful for [`Positioner::side`].
+    pub fn tracked_trigger_bounds(mut self, bounds: Rc<Cell<Bounds<Pixels>>>) -> Self {
+        self.trigger_bounds = Some(bounds);
+        self
+    }
+
+    /// Keeps the requested [`Positioner::placement`] instead of flipping when
+    /// it does not fit; the popup is still clamped into the viewport.
+    ///
+    /// For a popup that chose its side once, so a moving trigger (e.g. while
+    /// scrolling) cannot make it jump to the opposite side. Only meaningful for
+    /// [`Positioner::side`] with a placement.
+    pub fn fixed_placement(mut self) -> Self {
+        self.fixed_placement = true;
         self
     }
 
@@ -399,12 +427,31 @@ impl Element for Positioner {
         {
             *position = tracked.get();
         }
-        let position = resolve(
-            strategy,
-            popup_size,
-            window.viewport_size(),
-            frame.map(|inset| *inset + self.margin),
-        );
+        if let (Strategy::Side { trigger_bounds, .. }, Some(tracked)) =
+            (&mut strategy, &self.trigger_bounds)
+        {
+            *trigger_bounds = tracked.get();
+        }
+        let margin = frame.map(|inset| *inset + self.margin);
+        let position = match strategy {
+            Strategy::Side {
+                trigger_bounds,
+                placement: Some(placement),
+                align,
+                offset,
+            } if self.fixed_placement => ResolvedPosition {
+                bounds: clamp(
+                    Bounds::new(
+                        side_origin(trigger_bounds, popup_size, placement, align, offset),
+                        popup_size,
+                    ),
+                    window.viewport_size(),
+                    margin,
+                ),
+                placement: Some(placement),
+            },
+            strategy => resolve(strategy, popup_size, window.viewport_size(), margin),
+        };
         if let Some(callback) = &self.on_position {
             callback(position);
         }

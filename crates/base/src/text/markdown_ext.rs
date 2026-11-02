@@ -246,6 +246,7 @@ impl PartialEq for MarkdownNode {
 pub struct MarkdownExtensions {
     enable_mdx: bool,
     enable_frontmatter: bool,
+    preserve_soft_line_breaks: bool,
     block_parsers: Vec<Arc<MarkdownBlockParserFn>>,
     block_renderers: HashMap<SharedString, Arc<MarkdownBlockRenderFn>>,
     inline_parsers: Vec<Arc<MarkdownInlineParserFn>>,
@@ -255,6 +256,17 @@ pub struct MarkdownExtensions {
 }
 
 impl MarkdownExtensions {
+    /// Preserve ordinary source line endings in prose, as chat clients often
+    /// do. Disabled by default to retain CommonMark paragraph reflow. Fenced
+    /// code and other block syntax are unaffected.
+    pub fn soft_line_breaks(mut self, preserve: bool) -> Self {
+        self.preserve_soft_line_breaks = preserve;
+        self.bump_revision();
+        self
+    }
+    pub(crate) fn preserves_soft_line_breaks(&self) -> bool {
+        self.preserve_soft_line_breaks
+    }
     /// Change this revision when parser captures or plugin configuration change.
     /// Reusing it allows equivalent registrations rebuilt during rendering to
     /// retain the parsed document. Renderer-only changes do not need a new value.
@@ -352,6 +364,7 @@ impl MarkdownExtensions {
         self.parser_revision == other.parser_revision
             && self.enable_mdx == other.enable_mdx
             && self.enable_frontmatter == other.enable_frontmatter
+            && self.preserve_soft_line_breaks == other.preserve_soft_line_breaks
             && self.block_parsers.len() == other.block_parsers.len()
             && self.block_renderers.len() == other.block_renderers.len()
             && self.inline_parsers.len() == other.inline_parsers.len()
