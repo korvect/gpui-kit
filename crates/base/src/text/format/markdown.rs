@@ -908,7 +908,11 @@ fn parse_paragraph(
             // re-aligns over the folded bytes on its own. Leading runs at a
             // line break — after `<br>` or a hard break — are dropped by
             // `normalize_inline_boundaries`, which sees the nodes whole.
-            text = collapse_white_space(&val.value.replace("\r\n", " ").replace(['\n', '\r'], " "));
+            text = if cx.markdown_extensions.preserves_soft_line_breaks() {
+                val.value.replace("\r\n", "\n").replace('\r', "\n")
+            } else {
+                collapse_white_space(&val.value.replace("\r\n", " ").replace(['\n', '\r'], " "))
+            };
             paragraph.push(mapped_inline(source, text.clone(), node, cx))
         }
         Node::Emphasis(val) => {
@@ -1444,6 +1448,50 @@ mod tests {
     use gpui::ParentElement;
 
     use crate::text::{MarkdownExtensions, MarkdownNode, MarkdownPlugin};
+
+    #[test]
+    fn chat_soft_line_breaks_preserve_prose_without_rewriting_code() {
+        let source = "one\r\ntwo\n\n```sh\n  echo hi  \n```\n";
+        let mut standard = NodeContext::default();
+        let normal = parse(source, &mut standard).unwrap();
+        let mut chat = NodeContext {
+            markdown_extensions: Arc::new(MarkdownExtensions::default().soft_line_breaks(true)),
+            ..Default::default()
+        };
+        let preserved = parse(source, &mut chat).unwrap();
+        assert_eq!(
+            normal
+                .blocks
+                .iter()
+                .find_map(first_paragraph)
+                .unwrap()
+                .text(),
+            "one two"
+        );
+        assert_eq!(
+            preserved
+                .blocks
+                .iter()
+                .find_map(first_paragraph)
+                .unwrap()
+                .text(),
+            "one\ntwo"
+        );
+        let normal_code = normal
+            .blocks
+            .iter()
+            .find_map(first_code_block)
+            .unwrap()
+            .code();
+        let preserved_code = preserved
+            .blocks
+            .iter()
+            .find_map(first_code_block)
+            .unwrap()
+            .code();
+        assert_eq!(normal_code, preserved_code);
+        assert_eq!(preserved_code.as_ref(), "  echo hi  ");
+    }
 
     fn first_paragraph(block: &BlockNode) -> Option<&Paragraph> {
         match block {
